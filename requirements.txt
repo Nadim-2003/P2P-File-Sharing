@@ -1,0 +1,16 @@
+# P2P File-Sharing Requirements
+# No external dependencies - uses only Python standard library!
+
+# Python version requirement
+python>=3.7
+
+# Standard library modules used:
+# - socket: Network communication
+# - json: Message protocol
+# - threading: Concurrent operations
+# - logging: Logging system
+# - os: File and directory operations
+# - hashlib: File hashing
+# - uuid: Unique peer ID generation
+# - datetime: Timestamps
+# - tkinter: GUI (included with Python)
