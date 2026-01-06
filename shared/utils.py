@@ -34,7 +34,9 @@ class SocketUtils:
         """
         try:
             data = json.dumps(message).encode('utf-8')
-            sock.sendall(data)
+            # Prefix message with 8-byte big-endian length for framing
+            length_prefix = len(data).to_bytes(8, byteorder='big')
+            sock.sendall(length_prefix + data)
             return True
         except Exception as e:
             logger.error(f"Failed to send message: {e}")
@@ -55,14 +57,29 @@ class SocketUtils:
         try:
             if timeout is not None:
                 sock.settimeout(timeout)
-            
-            data = sock.recv(BUFFER_SIZE)
-            if not data:
-                return None
-                
+
+            # Read 8-byte length prefix first
+            prefix = b''
+            while len(prefix) < 8:
+                chunk = sock.recv(8 - len(prefix))
+                if not chunk:
+                    return None
+                prefix += chunk
+
+            msg_length = int.from_bytes(prefix, byteorder='big')
+            # Read the exact message length
+            data = b''
+            while len(data) < msg_length:
+                to_read = min(BUFFER_SIZE, msg_length - len(data))
+                chunk = sock.recv(to_read)
+                if not chunk:
+                    logger.error("Connection closed while receiving message body")
+                    return None
+                data += chunk
+
             message = json.loads(data.decode('utf-8'))
             return message
-            
+
         except socket.timeout:
             logger.warning("Socket receive timeout")
             return None

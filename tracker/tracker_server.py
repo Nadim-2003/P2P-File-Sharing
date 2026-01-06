@@ -5,11 +5,21 @@ Maintains a mapping between file IDs and the list of peers that have those files
 Handles peer registration and responds to queries for available peers.
 """
 
+import os
+import sys
 import socket
 import json
 import threading
 import logging
 from typing import Dict, List, Set
+import signal
+
+# Ensure project root is on sys.path so imports like `from shared.utils` work
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from shared.utils import SocketUtils
 
 # Configuration
 TRACKER_HOST = '127.0.0.1'
@@ -45,6 +55,8 @@ class TrackerServer:
         self.host = host
         self.port = port
         self.server_socket = None
+        self.running = threading.Event()
+        self.running.set()
         self.files: Dict[str, Dict] = {}  # file_id -> file metadata and peers
         self.lock = threading.RLock()  # Thread-safe access to files dictionary
         
@@ -58,7 +70,7 @@ class TrackerServer:
             self.server_socket.listen(5)
             logger.info(f"Tracker Server started on {self.host}:{self.port}")
             
-            while True:
+            while self.running.is_set():
                 try:
                     client_socket, client_address = self.server_socket.accept()
                     logger.info(f"Connection from {client_address}")
@@ -77,21 +89,33 @@ class TrackerServer:
         except Exception as e:
             logger.error(f"Failed to start tracker server: {e}")
         finally:
-            self.server_socket.close()
+            try:
+                if self.server_socket:
+                    self.server_socket.close()
+            except Exception:
+                pass
+
+    def shutdown(self):
+        """Gracefully stop the tracker server."""
+        logger.info("Tracker server shutting down...")
+        self.running.clear()
+        try:
+            if self.server_socket:
+                self.server_socket.close()
+        except Exception as e:
+            logger.error(f"Error closing server socket: {e}")
             
     def handle_client(self, client_socket, client_address):
         """Handle a single client connection."""
         try:
             while True:
-                data = client_socket.recv(BUFFER_SIZE)
-                if not data:
+                message = SocketUtils.receive_message(client_socket)
+                if not message:
                     break
-                
-                message = json.loads(data.decode('utf-8'))
+
                 logger.info(f"Received from {client_address}: {message}")
-                
                 response = self.process_message(message)
-                client_socket.send(json.dumps(response).encode('utf-8'))
+                SocketUtils.send_message(client_socket, response)
                 
         except json.JSONDecodeError:
             logger.error(f"Invalid JSON received from {client_address}")
@@ -253,7 +277,14 @@ class TrackerServer:
 
 if __name__ == "__main__":
     tracker = TrackerServer()
+
+    def _handle_sigint(signum, frame):
+        tracker.shutdown()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _handle_sigint)
+
     try:
         tracker.start()
     except KeyboardInterrupt:
-        logger.info("Tracker server shutting down...")
+        tracker.shutdown()
