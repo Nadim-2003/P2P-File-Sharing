@@ -217,6 +217,48 @@ class MessageBuilder:
         }
     
     @staticmethod
+    def search_by_name_message(filename: str) -> Dict:
+        """Build a SEARCH_BY_NAME message."""
+        return {
+            "type": "SEARCH_BY_NAME",
+            "filename": filename
+        }
+    
+    @staticmethod
+    def announce_message(event: str, info_hash: str, peer_id: str, 
+                        host: str = None, port: int = None,
+                        filename: str = None, num_chunks: int = None) -> Dict:
+        """
+        Build an ANNOUNCE message (BitTorrent-style).
+        
+        Args:
+            event: "started", "stopped", or "completed"
+            info_hash: File ID
+            peer_id: Persistent peer ID
+            host: Peer host (required for started)
+            port: Peer port (required for started)
+            filename: Filename (optional for started)
+            num_chunks: Number of chunks (optional for started)
+        """
+        msg = {
+            "type": "ANNOUNCE",
+            "event": event,
+            "info_hash": info_hash,
+            "peer_id": peer_id
+        }
+        
+        if host:
+            msg["host"] = host
+        if port:
+            msg["port"] = port
+        if filename:
+            msg["filename"] = filename
+        if num_chunks is not None:
+            msg["num_chunks"] = num_chunks
+        
+        return msg
+    
+    @staticmethod
     def unregister_message(file_id: str, peer_id: str) -> Dict:
         """Build an UNREGISTER message."""
         return {

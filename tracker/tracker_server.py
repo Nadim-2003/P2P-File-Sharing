@@ -22,7 +22,9 @@ if PROJECT_ROOT not in sys.path:
 from shared.utils import SocketUtils
 
 # Configuration
-TRACKER_HOST = '127.0.0.1'
+# Change to '0.0.0.0' to accept connections from other laptops on the network
+# Keep '127.0.0.1' for local-only testing
+TRACKER_HOST = '192.168.0.202'#'192.168.10.82'  # Listen on all network interfaces
 TRACKER_PORT = 5000
 BUFFER_SIZE = 4096
 
@@ -138,6 +140,8 @@ class TrackerServer:
         1. REGISTER - Register a file with the tracker
         2. QUERY - Query for peers that have a specific file
         3. UNREGISTER - Unregister a file from the tracker
+        4. SEARCH_BY_NAME - Search files by filename
+        5. ANNOUNCE - BitTorrent-style announce (started/stopped/completed)
         """
         msg_type = message.get("type")
         
@@ -147,6 +151,10 @@ class TrackerServer:
             return self.handle_query(message)
         elif msg_type == "UNREGISTER":
             return self.handle_unregister(message)
+        elif msg_type == "SEARCH_BY_NAME":
+            return self.handle_search_by_name(message)
+        elif msg_type == "ANNOUNCE":
+            return self.handle_announce(message)
         else:
             return {"status": "error", "message": f"Unknown message type: {msg_type}"}
             
@@ -261,6 +269,131 @@ class TrackerServer:
                 return {"status": "success", "message": f"Peer {peer_id} unregistered"}
             else:
                 return {"status": "error", "message": f"Peer {peer_id} not found for file {file_id}"}
+    
+    def handle_search_by_name(self, message: Dict) -> Dict:
+        """
+        Handle search for files by filename (case-insensitive partial match).
+        
+        Expected message format:
+        {
+            "type": "SEARCH_BY_NAME",
+            "filename": str
+        }
+        """
+        search_term = message.get("filename", "").lower().strip()
+        
+        if not search_term:
+            return {"status": "error", "message": "Missing filename search term"}
+        
+        with self.lock:
+            matching_files = []
+            
+            # Debug: log all files in tracker
+            logger.info(f"Searching for '{search_term}' in {len(self.files)} registered files")
+            for fid, finfo in self.files.items():
+                logger.debug(f"  File: {finfo['filename']} (ID: {fid})")
+            
+            for file_id, file_info in self.files.items():
+                filename = file_info["filename"].lower()
+                if search_term in filename:
+                    matching_files.append({
+                        "file_id": file_id,
+                        "filename": file_info["filename"],
+                        "num_chunks": file_info["num_chunks"],
+                        "peers": file_info["peers"]
+                    })
+            
+            if not matching_files:
+                logger.info(f"No files found matching '{search_term}'")
+                return {
+                    "status": "error",
+                    "message": f"No files found matching '{search_term}'",
+                    "files": []
+                }
+            
+            logger.info(f"Found {len(matching_files)} file(s) matching '{search_term}'")
+            return {
+                "status": "success",
+                "message": f"Found {len(matching_files)} file(s) matching '{search_term}'",
+                "files": matching_files
+            }
+    
+    def handle_announce(self, message: Dict) -> Dict:
+        """
+        Handle BitTorrent-style announce events.
+        
+        Expected message format:
+        {
+            "type": "ANNOUNCE",
+            "event": "started" | "stopped" | "completed",
+            "info_hash": str,  # file_id
+            "peer_id": str,
+            "host": str,
+            "port": int,
+            "filename": str,  # for started events
+            "num_chunks": int  # for started events
+        }
+        
+        Events:
+        - started: Peer started downloading/seeding (register with tracker)
+        - stopped: Peer stopped (unregister from tracker)
+        - completed: Peer completed download (became seeder)
+        """
+        event = message.get("event")
+        info_hash = message.get("info_hash")
+        peer_id = message.get("peer_id")
+        
+        if not all([event, info_hash, peer_id]):
+            return {"status": "error", "message": "Missing required fields (event, info_hash, peer_id)"}
+        
+        if event == "started":
+            # Register peer with tracker
+            filename = message.get("filename", "unknown")
+            num_chunks = message.get("num_chunks", 0)
+            host = message.get("host")
+            port = message.get("port")
+            
+            if not all([host, port]):
+                return {"status": "error", "message": "Missing host or port for started event"}
+            
+            with self.lock:
+                if info_hash not in self.files:
+                    self.files[info_hash] = {
+                        "filename": filename,
+                        "num_chunks": num_chunks,
+                        "peers": []
+                    }
+                
+                peer_info = {"host": host, "port": port, "peer_id": peer_id}
+                peers = self.files[info_hash]["peers"]
+                
+                if not any(p["peer_id"] == peer_id for p in peers):
+                    peers.append(peer_info)
+                    logger.info(f"Announce [started]: {peer_id} for {info_hash[:8]}... ({filename})")
+            
+            return {"status": "success", "message": "Announced started"}
+        
+        elif event == "stopped":
+            # Unregister peer from tracker
+            with self.lock:
+                if info_hash in self.files:
+                    peers = self.files[info_hash]["peers"]
+                    original_count = len(peers)
+                    self.files[info_hash]["peers"] = [p for p in peers if p["peer_id"] != peer_id]
+                    
+                    if len(self.files[info_hash]["peers"]) < original_count:
+                        logger.info(f"Announce [stopped]: {peer_id} for {info_hash[:8]}...")
+                        return {"status": "success", "message": "Announced stopped"}
+            
+            return {"status": "success", "message": "Peer was not registered"}
+        
+        elif event == "completed":
+            # Peer completed download (just log it, peer stays registered)
+            logger.info(f"Announce [completed]: {peer_id} completed {info_hash[:8]}...")
+            return {"status": "success", "message": "Announced completed"}
+        
+        else:
+            return {"status": "error", "message": f"Unknown announce event: {event}"}
                 
     def get_stats(self) -> Dict:
         """Get tracker server statistics."""
